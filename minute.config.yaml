@@ -1,0 +1,60 @@
+# Minute playground — tech draws this once.
+# Stakeholders never see git. Tech only reviews the PR.
+
+minute:
+  name: Office
+
+  # People who can grant access, wire playgrounds, and receive handoff pings.
+  admins:
+    slackUserIds: []
+    discordUserIds: []
+    githubLogins: []
+
+  # Selected employees who may run /minute.
+  # Admins can also /minute-admin allow @person (stored in .data/access.json).
+  requesters:
+    slackUserIds: []
+    discordUserIds: []
+
+  # Who gets pinged when the stakeholder is satisfied.
+  tech:
+    slackUserIds: []
+    discordUserIds: []
+
+  playgrounds:
+    - id: website
+      slackChannelIds: []
+      discordChannelIds: []
+      github:
+        owner: your-org
+        repo: your-repo
+        defaultBranch: main
+      preview:
+        # Live/staging URL for the "before" photo (optional)
+        baseUrl: ""
+        # After the edit, Minute can boot the app and shoot the "after" photo
+        command: ""
+        url: http://localhost:3000
+        waitSeconds: 25
+        # Fallback route if the ask doesn't name one
+        defaultRoute: /
+      allow:
+        paths:
+          - src/
+          - app/
+          - public/
+          - content/
+          - components/
+        routes:
+          - /
+      refuse:
+        - auth
+        - authentication
+        - payments
+        - billing
+        - migrations
+        - infrastructure
+        - secrets
+        - production deploy
+        - rewrite
+        - architecture
