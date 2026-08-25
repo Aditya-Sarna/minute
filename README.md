@@ -31,7 +31,7 @@ approve  or  disapprove (Minute exits; talk + fix the PR)
 
 ## Setup
 
-Node 20+. A GitHub repo. An Anthropic or OpenAI key.
+Node 22+. A GitHub repo. An Anthropic or OpenAI key.
 
 ```bash
 cd minute
@@ -85,18 +85,34 @@ The token’s user needs write access to the playground repo.
 
 ### 5. Photos
 
-In the playground:
-
 ```yaml
 preview:
-  baseUrl: https://staging.example.com   # optional "before" photo
-  command: npm run dev                   # boot the edited app for the "after" photo
+  baseUrl: https://staging.example.com
+  command: npm run dev
   url: http://localhost:3000
-  waitSeconds: 25
+  waitSeconds: 45
   defaultRoute: /
+  install: true
 ```
 
-If `command` is empty, Minute still opens the PR and says in-thread that it could not take a live photo.
+Minute installs repo deps (`npm ci` / `npm install`) before `command`, then screenshots the running app. If `command` is empty, it still opens the PR and says it could not take a live photo.
+
+## Production
+
+- SQLite in `MINUTE_DATA_DIR` (runs, jobs, access, rate limits)
+- Job worker (`MINUTE_MAX_JOBS`, default 2) with restart recovery
+- In-place status edits, Bearer git auth (token not in clone URL)
+- `POST /webhooks/github` plus poll fallback
+- 10 starts / 30 tweaks per user per hour
+- `GET /health` · `GET /ready` · SIGTERM drain
+
+```bash
+docker compose up --build
+# or
+NODE_ENV=production npm start
+```
+
+`npm test` and `npx tsc --noEmit` run in CI.
 
 ## Commands
 
@@ -115,11 +131,11 @@ Tech never has to merge from chat. They review the PR as usual. `CHANGES_REQUEST
 ## Layout
 
 ```
-src/protocol.ts      the loop (refuse, change, proof, handoff, exit)
-src/classify.ts      refuse early if it isn't simple
-src/agent.ts         smallest edit inside allow.paths
-src/preview.ts       Playwright photo
-src/slack-app.ts     Slack slash + thread + buttons
-src/discord-app.ts   Discord slash + thread + buttons
+src/protocol.ts      the loop
+src/queue.ts         durable jobs
+src/db.ts            SQLite
+src/agent.ts         smallest patch inside allow.paths
+src/preview.ts       npm install + Playwright
+src/webhooks.ts      GitHub
 minute.config.yaml   playgrounds
 ```

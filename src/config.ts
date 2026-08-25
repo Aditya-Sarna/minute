@@ -44,8 +44,10 @@ const schema = z.object({
               baseUrl: z.string().default(""),
               command: z.string().default(""),
               url: z.string().default("http://localhost:3000"),
-              waitSeconds: z.number().default(25),
+              waitSeconds: z.number().default(45),
               defaultRoute: z.string().default("/"),
+              install: z.boolean().default(true),
+              installTimeoutSeconds: z.number().default(240),
             })
             .default({}),
           allow: z

@@ -1,62 +1,85 @@
-import { mkdirSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
-import { simpleGit } from "simple-git";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { simpleGit, type SimpleGit } from "simple-git";
+import { dataDir } from "./limits.js";
 import type { Playground } from "./types.js";
 
 export function workspaceDir(runId: string): string {
-  return resolve(".data/workspaces", runId);
+  return resolve(dataDir(), "workspaces", runId);
 }
 
-function cloneUrl(playground: Playground): string {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) throw new Error("GITHUB_TOKEN is not set");
+function token(): string {
+  const t = process.env.GITHUB_TOKEN;
+  if (!t) throw new Error("GITHUB_TOKEN is not set");
+  return t;
+}
+
+function git(dir?: string): SimpleGit {
+  return simpleGit(dir, {
+    config: [`http.extraHeader=Authorization: Bearer ${token()}`],
+  }).env({ GIT_TERMINAL_PROMPT: "0" });
+}
+
+function repoUrl(playground: Playground): string {
   const { owner, repo } = playground.github;
-  return `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+  return `https://github.com/${owner}/${repo}.git`;
 }
 
-export async function checkout(runId: string, playground: Playground, branch: string) {
-  const dir = workspaceDir(runId);
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  const git = simpleGit();
-  await git.clone(cloneUrl(playground), dir, [
-    "--branch",
-    playground.github.defaultBranch,
-    "--single-branch",
-    "--depth",
-    "50",
-  ]);
-  const repo = simpleGit(dir);
+async function configureIdentity(dir: string) {
+  const repo = git(dir);
   await repo.addConfig("user.name", "Minute");
   await repo.addConfig("user.email", "minute[bot]@users.noreply.github.com");
-  await repo.checkoutLocalBranch(branch);
+}
+
+export async function ensureWorkspace(opts: {
+  runId: string;
+  playground: Playground;
+  branch: string;
+  createBranch: boolean;
+}): Promise<string> {
+  const dir = workspaceDir(opts.runId);
+  if (existsSync(join(dir, ".git"))) {
+    const repo = git(dir);
+    try {
+      await repo.revparse(["--abbrev-ref", "HEAD"]);
+      return dir;
+    } catch {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  await git().clone(repoUrl(opts.playground), dir, [
+    "--branch",
+    opts.playground.github.defaultBranch,
+    "--single-branch",
+    "--depth",
+    "1",
+  ]);
+  await configureIdentity(dir);
+  const repo = git(dir);
+
+  if (opts.createBranch) {
+    await repo.checkoutLocalBranch(opts.branch);
+    return dir;
+  }
+
+  await repo.fetch(["origin", opts.branch, "--depth", "1"]);
+  await repo.checkout(["-B", opts.branch, `origin/${opts.branch}`]);
   return dir;
 }
 
 export async function commitAll(dir: string, message: string) {
-  const git = simpleGit(dir);
-  await git.add(".");
-  const status = await git.status();
+  const repo = git(dir);
+  await repo.add(["-A", "."]);
+  const status = await repo.status();
   if (status.files.length === 0) {
     throw new Error("No files changed — the agent didn't edit anything.");
   }
-  await git.commit(message);
+  await repo.commit(message);
 }
 
 export async function pushBranch(dir: string, branch: string) {
-  const git = simpleGit(dir);
-  await git.push("origin", branch, ["--set-upstream"]);
-}
-
-export async function changedFiles(dir: string): Promise<string[]> {
-  const git = simpleGit(dir);
-  const summary = await git.diffSummary(["--name-only", "HEAD"]);
-  // After commit, compare to default via log? Use status against origin default after first commit:
-  const diff = await git.diff(["--name-only", "HEAD~1"]);
-  const names = diff
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (names.length) return names;
-  return summary.files.map((f) => ("file" in f ? f.file : String(f)));
+  await git(dir).push("origin", branch, ["--set-upstream"]);
 }

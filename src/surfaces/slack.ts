@@ -11,16 +11,17 @@ export function slackAdapter(
   return {
     mention: (userId) => `<@${userId}>`,
 
-    async postStatus(text) {
-      await client.chat.postMessage({ channel, thread_ts: threadTs, text });
+    async postOrUpdateStatus(text, messageId) {
+      if (messageId) {
+        await client.chat.update({ channel, ts: messageId, text });
+        return messageId;
+      }
+      const posted = await client.chat.postMessage({ channel, thread_ts: threadTs, text });
+      return posted.ts;
     },
 
     async postRefuse(reason) {
-      await client.chat.postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: reason,
-      });
+      await client.chat.postMessage({ channel, thread_ts: threadTs, text: reason });
     },
 
     async postProof(proof: Proof, run: Run) {

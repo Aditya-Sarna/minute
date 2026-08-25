@@ -24,6 +24,8 @@ export type Run = {
   prUrl?: string;
   workspaceDir?: string;
   lastProofPath?: string;
+  statusMessageId?: string;
+  iterationCount?: number;
   createdAt: string;
   updatedAt: string;
   exitReason?: string;
@@ -44,6 +46,8 @@ export type Playground = {
     url: string;
     waitSeconds: number;
     defaultRoute: string;
+    install: boolean;
+    installTimeoutSeconds: number;
   };
   allow: {
     paths: string[];

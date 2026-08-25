@@ -7,11 +7,13 @@ import {
 } from "discord.js";
 import { isAdmin, isRequester, grant, revoke, denyMessage, listGranted } from "./access.js";
 import { playgroundForChannel, loadConfig, repoLabel } from "./config.js";
-import { getRun, runByThread } from "./store.js";
-import { startRun, iterateRun, handoffRun, cancelRun } from "./protocol.js";
-import { discordAdapter, asSendable } from "./surfaces/discord.js";
+import { getRun, runByThread, busyRunInThread, claimRun } from "./store.js";
 import { downloadAttachment } from "./download.js";
 import { log } from "./logger.js";
+import { clampRequest, LIMITS } from "./limits.js";
+import { takeStartToken, takeIterateToken, rateLimitedMessage } from "./rate-limit.js";
+import { createRunDraft } from "./protocol.js";
+import { enqueueStart, enqueueIterate, enqueueHandoff, enqueueCancel } from "./jobs.js";
 
 export function createDiscordClient() {
   const token = process.env.DISCORD_TOKEN;
@@ -46,16 +48,12 @@ export function createDiscordClient() {
             return;
           }
           await interaction.deferUpdate();
-          const channel = await client.channels.fetch(run.threadId);
-          if (!channel || !channel.isTextBased()) return;
-          await handoffRun(run, discordAdapter(asSendable(channel)));
+          enqueueHandoff(run.id);
           return;
         }
         if (action === "cancel") {
           await interaction.deferUpdate();
-          const channel = await client.channels.fetch(run.threadId);
-          if (!channel || !channel.isTextBased()) return;
-          await cancelRun(run, discordAdapter(asSendable(channel)), "Cancelled in chat. Minute is done.");
+          enqueueCancel(run.id, "Cancelled in chat. Minute is done.");
         }
         return;
       }
@@ -72,6 +70,10 @@ export function createDiscordClient() {
         await interaction.reply({ content: denyMessage(), ephemeral: true });
         return;
       }
+      if (!takeStartToken("discord", userId)) {
+        await interaction.reply({ content: rateLimitedMessage(), ephemeral: true });
+        return;
+      }
       const channelId = interaction.channelId;
       const playground = playgroundForChannel("discord", channelId);
       if (!playground) {
@@ -82,7 +84,14 @@ export function createDiscordClient() {
         });
         return;
       }
-      const text = interaction.options.getString("request", true).trim();
+      const text = clampRequest(interaction.options.getString("request", true));
+      if (!text) {
+        await interaction.reply({
+          content: `Need a request (max ${LIMITS.requestChars} chars).`,
+          ephemeral: true,
+        });
+        return;
+      }
       await interaction.reply(`**Minute** · ${interaction.user} · ${text}`);
       const reply = await interaction.fetchReply();
       const channel = await interaction.channel?.fetch();
@@ -100,21 +109,19 @@ export function createDiscordClient() {
       const file = interaction.options.getAttachment("file");
       const attachments = [];
       if (file) {
-        attachments.push(
-          await downloadAttachment(thread.id, { name: file.name, url: file.url }),
-        );
+        attachments.push(await downloadAttachment(thread.id, { name: file.name, url: file.url }));
       }
-      void startRun({
+      const run = createRunDraft({
         surface: "discord",
         channelId,
         threadId: thread.id,
         parentMessageId: reply.id,
         requesterId: userId,
         requesterName: interaction.user.displayName || interaction.user.username,
+        playgroundId: playground.id,
         text,
-        attachments,
-        chat: discordAdapter(asSendable(thread)),
-      }).catch((err) => log.error({ err }, "discord startRun"));
+      });
+      enqueueStart(run.id, attachments);
     } catch (err) {
       log.error({ err }, "discord interaction");
     }
@@ -123,21 +130,26 @@ export function createDiscordClient() {
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (!message.channel.isThread()) return;
+    if (busyRunInThread("discord", message.channel.id)) return;
     const run = runByThread("discord", message.channel.id);
     if (!run || run.status !== "proof") return;
     if (message.author.id !== run.requesterId) return;
-    const text = message.content.trim();
-    if (!text && message.attachments.size === 0) return;
+    if (!claimRun(run.id, "proof", "working")) return;
+    if (!takeIterateToken("discord", message.author.id)) {
+      claimRun(run.id, "working", "proof");
+      await message.reply(rateLimitedMessage());
+      return;
+    }
+    const text = clampRequest(message.content);
+    if (!text && message.attachments.size === 0) {
+      claimRun(run.id, "working", "proof");
+      return;
+    }
     const attachments = [];
     for (const att of message.attachments.values()) {
       attachments.push(await downloadAttachment(run.id, { name: att.name, url: att.url }));
     }
-    await iterateRun({
-      run,
-      text: text || "(see attached file)",
-      attachments,
-      chat: discordAdapter(asSendable(message.channel)),
-    });
+    enqueueIterate(run.id, text || "(see attached file)", attachments);
   });
 
   return { client, token };

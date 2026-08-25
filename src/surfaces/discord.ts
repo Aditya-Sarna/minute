@@ -8,8 +8,12 @@ import { basename } from "node:path";
 import type { ChatAdapter } from "./types.js";
 import type { Proof, Run } from "../types.js";
 
+type Posted = { id: string };
+type Editable = { edit: (text: string) => Promise<unknown> };
+
 type Sendable = {
   send: (payload: string | MessageCreateOptions) => Promise<unknown>;
+  messages?: { fetch: (id: string) => Promise<Editable> };
 };
 
 export function asSendable(channel: object): Sendable {
@@ -25,8 +29,14 @@ export function discordAdapter(channel: Sendable): ChatAdapter {
   return {
     mention: (userId) => `<@${userId}>`,
 
-    async postStatus(text) {
-      await send(text);
+    async postOrUpdateStatus(text, messageId) {
+      if (messageId && channel.messages) {
+        const msg = await channel.messages.fetch(messageId);
+        await msg.edit(text);
+        return messageId;
+      }
+      const posted = (await send(text)) as Posted;
+      return posted.id;
     },
 
     async postRefuse(reason) {

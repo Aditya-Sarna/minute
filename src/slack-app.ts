@@ -1,11 +1,12 @@
 import bolt from "@slack/bolt";
 import { isAdmin, isRequester, grant, revoke, denyMessage, listGranted } from "./access.js";
 import { playgroundForChannel, loadConfig, repoLabel } from "./config.js";
-import { getRun, runByThread } from "./store.js";
-import { startRun, iterateRun, handoffRun, cancelRun } from "./protocol.js";
-import { slackAdapter } from "./surfaces/slack.js";
-import { log } from "./logger.js";
+import { getRun, runByThread, busyRunInThread, claimRun } from "./store.js";
 import { downloadAttachment } from "./download.js";
+import { clampRequest, LIMITS } from "./limits.js";
+import { takeStartToken, takeIterateToken, rateLimitedMessage } from "./rate-limit.js";
+import { createRunDraft } from "./protocol.js";
+import { enqueueStart, enqueueIterate, enqueueHandoff, enqueueCancel } from "./jobs.js";
 
 const { App } = bolt;
 
@@ -33,6 +34,14 @@ export function createSlackApp() {
       });
       return;
     }
+    if (!takeStartToken("slack", userId)) {
+      await client.chat.postEphemeral({
+        channel: command.channel_id,
+        user: userId,
+        text: rateLimitedMessage(),
+      });
+      return;
+    }
     const playground = playgroundForChannel("slack", command.channel_id);
     if (!playground) {
       await client.chat.postEphemeral({
@@ -42,12 +51,12 @@ export function createSlackApp() {
       });
       return;
     }
-    const text = (command.text || "").trim();
+    const text = clampRequest(command.text || "");
     if (!text) {
       await client.chat.postEphemeral({
         channel: command.channel_id,
         user: userId,
-        text: "Try `/minute make the homepage background forest green`",
+        text: `Try \`/minute make the homepage background forest green\` (max ${LIMITS.requestChars} chars).`,
       });
       return;
     }
@@ -59,17 +68,17 @@ export function createSlackApp() {
     const threadTs = parent.ts;
     if (!threadTs) return;
 
-    const chat = slackAdapter(client, command.channel_id, threadTs);
-    void startRun({
+    const run = createRunDraft({
       surface: "slack",
       channelId: command.channel_id,
       threadId: threadTs,
       parentMessageId: threadTs,
       requesterId: userId,
       requesterName: command.user_name,
+      playgroundId: playground.id,
       text,
-      chat,
-    }).catch((err) => log.error({ err }, "slack startRun"));
+    });
+    enqueueStart(run.id);
   });
 
   app.command("/minute-admin", async ({ command, ack, client }) => {
@@ -121,22 +130,21 @@ export function createSlackApp() {
 
   app.action("minute_looks_good", async ({ ack, body, client }) => {
     await ack();
-    const runId = "actions" in body ? body.actions?.[0] && "value" in body.actions[0] ? body.actions[0].value : "" : "";
+    const runId =
+      "actions" in body && body.actions?.[0] && "value" in body.actions[0] ? body.actions[0].value : "";
     const run = runId ? getRun(runId) : undefined;
     if (!run) return;
-    const user = body.user.id;
-    if (user !== run.requesterId && !isAdmin("slack", user)) return;
-    const chat = slackAdapter(client, run.channelId, run.threadId);
-    await handoffRun(run, chat);
+    if (body.user.id !== run.requesterId && !isAdmin("slack", body.user.id)) return;
+    enqueueHandoff(run.id);
   });
 
-  app.action("minute_cancel", async ({ ack, body, client }) => {
+  app.action("minute_cancel", async ({ ack, body }) => {
     await ack();
-    const runId = "actions" in body ? body.actions?.[0] && "value" in body.actions[0] ? body.actions[0].value : "" : "";
+    const runId =
+      "actions" in body && body.actions?.[0] && "value" in body.actions[0] ? body.actions[0].value : "";
     const run = runId ? getRun(runId) : undefined;
     if (!run) return;
-    const chat = slackAdapter(client, run.channelId, run.threadId);
-    await cancelRun(run, chat, "Cancelled in chat. Minute is done.");
+    enqueueCancel(run.id, "Cancelled in chat. Minute is done.");
   });
 
   app.event("message", async ({ event, client }) => {
@@ -144,10 +152,21 @@ export function createSlackApp() {
     const threadTs = "thread_ts" in event ? event.thread_ts : undefined;
     if (!threadTs || threadTs === event.ts) return;
     if ("bot_id" in event && event.bot_id) return;
+    if (busyRunInThread("slack", threadTs)) return;
     const run = runByThread("slack", threadTs);
     if (!run || run.status !== "proof") return;
     if (!("user" in event) || event.user !== run.requesterId) return;
-    const text = "text" in event ? (event.text || "").trim() : "";
+    if (!claimRun(run.id, "proof", "working")) return;
+    if (!takeIterateToken("slack", event.user)) {
+      claimRun(run.id, "working", "proof");
+      await client.chat.postMessage({
+        channel: run.channelId,
+        thread_ts: threadTs,
+        text: rateLimitedMessage(),
+      });
+      return;
+    }
+    const text = clampRequest("text" in event ? event.text || "" : "");
 
     const attachments = [];
     if ("files" in event && Array.isArray(event.files)) {
@@ -160,10 +179,11 @@ export function createSlackApp() {
         );
       }
     }
-    if (!text && attachments.length === 0) return;
-
-    const chat = slackAdapter(client, run.channelId, run.threadId);
-    await iterateRun({ run, text: text || "(see attached file)", attachments, chat });
+    if (!text && attachments.length === 0) {
+      claimRun(run.id, "working", "proof");
+      return;
+    }
+    enqueueIterate(run.id, text || "(see attached file)", attachments);
   });
 
   return app;

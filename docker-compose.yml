@@ -1,0 +1,17 @@
+services:
+  minute:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      MINUTE_DATA_DIR: /app/.data
+    ports:
+      - "8787:8787"
+    volumes:
+      - minute-data:/app/.data
+      - ./minute.config.yaml:/app/minute.config.yaml:ro
+    stop_grace_period: 20s
+
+volumes:
+  minute-data:

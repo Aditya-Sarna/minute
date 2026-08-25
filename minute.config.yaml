@@ -11,7 +11,7 @@ minute:
     githubLogins: []
 
   # Selected employees who may run /minute.
-  # Admins can also /minute-admin allow @person (stored in .data/access.json).
+  # Admins can also /minute-admin allow @person (stored in SQLite).
   requesters:
     slackUserIds: []
     discordUserIds: []
@@ -35,9 +35,10 @@ minute:
         # After the edit, Minute can boot the app and shoot the "after" photo
         command: ""
         url: http://localhost:3000
-        waitSeconds: 25
-        # Fallback route if the ask doesn't name one
+        waitSeconds: 45
         defaultRoute: /
+        install: true
+        installTimeoutSeconds: 240
       allow:
         paths:
           - src/
